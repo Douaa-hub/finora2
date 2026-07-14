@@ -53,6 +53,7 @@ export const DocumentDetailsPage = lazy(
   () => import("src/pages/documents/documents-details"),
 );
 export const MeetingsPage = lazy(() => import("src/pages/meetings"));
+export const DashboardPage = lazy(() => import("src/pages/dashboard"));
 
 export const NotificationsPage = lazy(
   () => import("src/pages/notifications/index"),
@@ -165,7 +166,7 @@ export const routesSection: RouteObject[] = [
         path: "dashboard",
         element: (
           <PermissionGuard requiredPath="/dashboard">
-            <UserPage />
+            <DashboardPage />
           </PermissionGuard>
         ),
       },
@@ -351,7 +352,18 @@ export const routesSection: RouteObject[] = [
           {
             path: "notification",
             element: (
-              <PermissionGuard requiredPath="/notification">
+              <PermissionGuard
+                requiredPath="/notification"
+                allowForRoleCodes={[
+                  "CLIENT",
+                  "ACCOUNTANT",
+                  "COMPTABLE",
+                  "COLLABORATOR",
+                  "COLLABORATEUR",
+                  "ADMINISTRATOR",
+                  "SUPER_ADMIN",
+                ]}
+              >
                 <NotificationsPage />
               </PermissionGuard>
             ),
@@ -422,7 +434,7 @@ export const routesSection: RouteObject[] = [
             path: "dashboard",
             element: (
               <PermissionGuard requiredPath="/dashboard">
-                <UserPage />
+                <DashboardPage />
               </PermissionGuard>
             ),
           },

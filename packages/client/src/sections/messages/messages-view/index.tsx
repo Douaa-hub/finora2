@@ -381,8 +381,29 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
     Record<number, boolean>
   >({});
 
-  // Typing indicator state: set of roomIds where the other user is typing
-  const [typingRooms, setTypingRooms] = useState<Set<number>>(new Set());
+  // Typing indicator state: for each roomId, the set of userIds currently
+  // typing. Keyed by user (not just room) so that in group conversations one
+  // participant stopping doesn't erase the indicator while another is still
+  // typing.
+  const [typingUsersByRoom, setTypingUsersByRoom] = useState<
+    Map<number, Set<number>>
+  >(new Map());
+
+  // Safety-net timeouts per (room, user) pair: auto-clears a stuck "typing"
+  // indicator if no typing:stop ever arrives for that user (e.g. the peer's
+  // tab crashes or network drops mid-keystroke, before their own client-side
+  // stop timer or our disconnect cleanup on the server has a chance to fire).
+  const typingSafetyTimeoutsRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
+
+  useEffect(() => {
+    const timeouts = typingSafetyTimeoutsRef.current;
+    return () => {
+      timeouts.forEach((t) => clearTimeout(t));
+      timeouts.clear();
+    };
+  }, []);
 
   // Buffer realtime messages that arrive before the active conversation is ready.
   // This prevents "works for sender, not for recipient until refresh" cases caused by timing.
@@ -405,7 +426,14 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
       }
     },
     onMessageNew: (msg: SocketMessage) => {
-      const isMine = msg.senderId === currentUid;
+      // Call-status system messages (started/rejected/missed/ended) are
+      // never added optimistically by any client — unlike a user-typed
+      // message, whose sender already injects it into the cache from the
+      // send mutation's own response. Skipping "own" messages here would
+      // otherwise hide these cards from the call's initiator, since the
+      // backend records the initiator as the senderId regardless of who
+      // actually rejected/ended the call.
+      const isMine = msg.senderId === currentUid && msg.type !== "call";
       const activeRoomId = selectedConversationRef.current;
 
       if (isMine) {
@@ -544,12 +572,46 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
     onTyping: ({ roomId, userId, typing }) => {
       if (userId === currentUid) return;
 
-      setTypingRooms((prev) => {
-        const next = new Set(prev);
-        if (typing) next.add(roomId);
+      // Keyed by room AND user: in a group conversation, user A stopping
+      // must not clear the safety timer (or the indicator) for user B who
+      // may still be typing in the same room.
+      const key = `${roomId}:${userId}`;
+
+      const existingTimeout = typingSafetyTimeoutsRef.current.get(key);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+        typingSafetyTimeoutsRef.current.delete(key);
+      }
+
+      setTypingUsersByRoom((prev) => {
+        const roomTypers = new Set(prev.get(roomId));
+        if (typing) roomTypers.add(userId);
+        else roomTypers.delete(userId);
+
+        const next = new Map(prev);
+        if (roomTypers.size > 0) next.set(roomId, roomTypers);
         else next.delete(roomId);
         return next;
       });
+
+      if (typing) {
+        const timeoutId = setTimeout(() => {
+          setTypingUsersByRoom((prev) => {
+            const roomTypers = prev.get(roomId);
+            if (!roomTypers?.has(userId)) return prev;
+
+            const updated = new Set(roomTypers);
+            updated.delete(userId);
+
+            const next = new Map(prev);
+            if (updated.size > 0) next.set(roomId, updated);
+            else next.delete(roomId);
+            return next;
+          });
+          typingSafetyTimeoutsRef.current.delete(key);
+        }, 5000);
+        typingSafetyTimeoutsRef.current.set(key, timeoutId);
+      }
     },
 
     onCallMessageUpdated: ({
@@ -1303,13 +1365,15 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
     const div = document.createElement("div");
     div.innerHTML = messageHtml;
     const plainText = (div.textContent || "").replace(/\u00a0/g, " ").trim();
-    const messageContent =
-      plainText ||
-      file?.name ||
-      request?.title ||
-      task?.title ||
-      appointment?.title ||
-      "";
+    // For a file/image attachment, content must only ever be text the user
+    // deliberately typed as a caption - never the file's own name, which is
+    // already conveyed via fileName/fileUrl metadata. Falling back to
+    // file.name here used to make the backend treat it as a real caption
+    // (see sendMessage's JSON {text, file} wrapping), which the UI then
+    // rendered as a second, separate bubble showing the filename as text.
+    const messageContent = file
+      ? plainText
+      : plainText || request?.title || task?.title || appointment?.title || "";
 
     // Send via API
     if (file) {
@@ -1344,6 +1408,7 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
                 deleted: false,
                 edited: false,
                 fileUrl: saved.fileUrl ?? null,
+                fileName: saved.fileName ?? null,
                 attachments: saved.attachments,
                 sender: saved.sender,
                 requestId: saved.requestId ?? undefined,
@@ -1548,7 +1613,8 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
     };
   }, [currentRoom, currentUid, myRoleCode]);
 
-  const isRemoteTyping = typingRooms.has(selectedConversation);
+  const isRemoteTyping =
+    (typingUsersByRoom.get(selectedConversation)?.size ?? 0) > 0;
 
   // ── Render helpers ────────────────────────────────────────────────────────
 

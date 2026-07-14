@@ -701,6 +701,13 @@ export default function MeetingsView() {
     const parsed = routeId ? parseInt(routeId, 10) : NaN;
     return isNaN(parsed) ? null : parsed;
   });
+  useEffect(() => {
+    if (!routeId) return;
+    const parsed = parseInt(routeId, 10);
+    if (!isNaN(parsed)) {
+      setSelectedId(parsed);
+    }
+  }, [routeId]);
   const [selectedAppointmentSnapshot, setSelectedAppointmentSnapshot] =
     useState<AppointmentItem | null>(null);
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);

@@ -695,7 +695,7 @@ export default function NotificationsView() {
     const role = String(roleCode).toLowerCase();
 
     if (role.includes("client")) return "client";
-
+    if (role.includes("collaborat")) return "collaborateur";
     if (
       role.includes("accountant") ||
       role.includes("comptable") ||

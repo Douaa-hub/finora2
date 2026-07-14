@@ -110,6 +110,29 @@ export class CallService {
     });
   }
 
+  // The initiator hung up before the callee ever answered (call never left
+  // the "initiated" status) — distinct from a normal hangup after a real
+  // conversation happened, which is recorded via endCall/"completed".
+  async cancelCall(callId: number) {
+    return this.prisma.call.update({
+      where: { id: callId },
+      data: {
+        status: 'cancelled',
+        endedAt: new Date(),
+      },
+      include: {
+        initiator: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+          },
+        },
+      },
+    });
+  }
+
   async getCallHistory(roomId: number, limit = 20, offset = 0) {
     return this.prisma.call.findMany({
       where: { roomId },

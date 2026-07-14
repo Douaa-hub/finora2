@@ -387,6 +387,7 @@ export function mapApiMessageToMessage(
           | "cancelled",
         duration: msg.call.duration,
         initiatorId: msg.call.initiatorId,
+        isOutgoing: msg.call.initiatorId === currentUserId,
       },
     };
   }
@@ -397,7 +398,11 @@ export function mapApiMessageToMessage(
     // fileUrl = presigned URL from backend for the actual file
     const url = msg.fileUrl || "";
     const objectName = (msg as any).fileName || msg.content || "";
-    const fileName = objectName.split("/").pop() || objectName || "Fichier";
+    const rawFileName = objectName.split("/").pop() || objectName || "Fichier";
+    // sendMessage() always prefixes the stored object name with
+    // `${Date.now()}-` to avoid collisions in MinIO — strip it so the card
+    // shows the real original filename instead of a timestamp-cluttered one.
+    const fileName = rawFileName.replace(/^\d+-/, "") || "Fichier";
     // Derive category: trust server type hint ("image") first, then filename extension
     const lower = fileName.toLowerCase();
     const fileCategory =

@@ -36,6 +36,6 @@ import { MinioService } from 'src/common/services/minio.service';
     FileUploadService,
     MinioService,
   ],
-  exports: [NotificationService],
+  exports: [NotificationService, NotificationGateway],
 })
 export class NotificationModule {}

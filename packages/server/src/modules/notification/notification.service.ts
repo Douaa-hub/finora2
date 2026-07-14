@@ -322,31 +322,31 @@ export class NotificationService {
       'appointment.created': {
         title: 'Nouveau rendez-vous',
         message: `${actorName} a créé un rendez-vous avec vous`,
-        actionUrl: `/appointments/${data.appointmentId}`,
+        actionUrl: `/meetings/${data.appointmentId}`,
         priority: 'high',
       },
       'appointment.confirmed': {
         title: 'Rendez-vous confirmé',
         message: `Votre rendez-vous a été confirmé par ${actorName}`,
-        actionUrl: `/appointments/${data.appointmentId}`,
+        actionUrl: `/meetings/${data.appointmentId}`,
         priority: 'normal',
       },
       'appointment.rejected': {
         title: 'Rendez-vous refusé',
         message: `Votre rendez-vous a été refusé par ${actorName}`,
-        actionUrl: `/appointments/${data.appointmentId}`,
+        actionUrl: `/meetings/${data.appointmentId}`,
         priority: 'high',
       },
       'appointment.rescheduled': {
         title: 'Rendez-vous reprogrammé',
         message: `${actorName} a reprogrammé le rendez-vous`,
-        actionUrl: `/appointments/${data.appointmentId}`,
+        actionUrl: `/meetings/${data.appointmentId}`,
         priority: 'normal',
       },
       'appointment.cancelled': {
         title: 'Rendez-vous annulé',
         message: `${actorName} a annulé le rendez-vous`,
-        actionUrl: `/appointments/${data.appointmentId}`,
+        actionUrl: `/meetings/${data.appointmentId}`,
         priority: 'high',
       },
 

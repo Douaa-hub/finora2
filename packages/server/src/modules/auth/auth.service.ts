@@ -337,6 +337,7 @@ export class AuthService {
           role: {
             select: {
               id: true,
+              code: true,
               nameFr: true,
               nameEn: true,
               descriptionFr: true,
@@ -522,7 +523,7 @@ export class AuthService {
         role: {
           id: String(role.id),
           name: role.nameEn,
-          code: role.nameFr.toLowerCase().replace(/\s+/g, '_'),
+          code: role.code || role.nameFr.toLowerCase().replace(/\s+/g, '_'),
           description: role.descriptionEn,
         },
         features,

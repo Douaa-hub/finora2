@@ -21,6 +21,7 @@ export type NotificationItemProps = {
   onAccept?: () => void;
   onReject?: () => void;
   onNavigate?: (url: string) => void;
+  onMarkAsRead?: (id: string) => void;
   isProcessing?: boolean;
 };
 
@@ -97,6 +98,13 @@ export function NotificationItem({
   const handleClick = () => {
     if (notification.actionUrl && notification.onNavigate) {
       notification.onNavigate(notification.actionUrl);
+    }
+    if (notification.isUnRead && notification.onMarkAsRead) {
+      const markId = notification.id;
+      const markFn = notification.onMarkAsRead;
+      setTimeout(() => {
+        markFn(markId);
+      }, 0);
     }
   };
 

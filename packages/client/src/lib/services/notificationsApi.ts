@@ -117,6 +117,7 @@ export const notificationsApi = createApi({
       query: (id) => ({
         url: `/notifications/${id}/read`,
         method: "PATCH",
+        skipToast: true,
       }),
       invalidatesTags: [
         { type: "Notifications", id: "LIST" },

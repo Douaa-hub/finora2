@@ -101,6 +101,7 @@ export interface ChatMessage {
   sender?: ChatParticipant;
   attachments?: string[];
   fileUrl?: string | null;
+  fileName?: string | null;
   request?: ChatMessageRequest;
   task?: ChatMessageTask;
   appointment?: ChatMessageAppointment;

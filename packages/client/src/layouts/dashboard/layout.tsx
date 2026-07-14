@@ -33,6 +33,7 @@ import {
   useHeaderSearch,
 } from "src/contexts/HeaderSearchContext";
 import ChatbotWidget from "src/components/chatbot/ChatbotWidget";
+import { useVerifyUserQuery } from "src/lib/services/authApi";
 
 // ----------------------------------------------------------------------
 
@@ -60,6 +61,17 @@ function DashboardLayoutInner({
   const { value: open, onFalse: onClose, onTrue: onOpen } = useBoolean();
   const navItems = useNavigation();
   const { searchContent } = useHeaderSearch();
+
+  const { data: userData } = useVerifyUserQuery();
+  const roleCode =
+    userData?.role && typeof userData.role === "object"
+      ? userData.role.code
+      : typeof userData?.role === "string"
+        ? userData.role
+        : "";
+  const isClient =
+    roleCode === "CLIENT" ||
+    (typeof roleCode === "string" && roleCode.toLowerCase() === "client");
 
   const renderHeader = () => {
     const headerSlotProps: HeaderSectionProps["slotProps"] = {
@@ -200,7 +212,7 @@ function DashboardLayoutInner({
       {children}
       <GlobalFileDrawer />
       <GlobalCallHandler />
-      <ChatbotWidget />
+      {isClient && <ChatbotWidget />}
     </MainSection>
   );
 

@@ -72,6 +72,10 @@ export type MessageCall = {
   status: "missed" | "completed" | "rejected" | "cancelled" | "ongoing";
   duration?: number;
   initiatorId: number;
+  /** True when the current user is the one who placed this call (derived from
+   * call.initiatorId, not ChatMessage.senderId — the two happen to always
+   * match today, but this keeps the UI correct even if that changes). */
+  isOutgoing: boolean;
 };
 
 export type Message = {

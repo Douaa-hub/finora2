@@ -22,6 +22,8 @@ import {
   Video,
   PhoneMissed,
   PhoneOff,
+  PhoneOutgoing,
+  PhoneIncoming,
   Users,
 } from "lucide-react";
 import { useGlobalCall } from "src/contexts/GlobalCallContext";
@@ -29,7 +31,7 @@ import { format } from "date-fns";
 import { fr } from "date-fns/locale";
 import { useDashboardBase } from "../../../../hooks/useDashboardBase";
 
-import type { Message, Conversation } from "../data/types";
+import type { Message, Conversation, MessageCall } from "../data/types";
 
 type MessageBubbleProps = {
   message: Message;
@@ -80,10 +82,76 @@ function detectFileCategory(name: string, type: string): FileCategory {
 const FILE_CATEGORY_LABELS: Record<FileCategory, string> = {
   image: "Image",
   pdf: "PDF",
-  doc: "Document",
+  doc: "DOCX",
   xls: "Tableur",
   other: "Fichier",
 };
+
+type CallColorScheme = "green" | "red" | "amber";
+
+const CALL_COLOR_SCHEMES: Record<
+  CallColorScheme,
+  { bg: string; border: string; fg: string }
+> = {
+  green: { bg: "#F0FDF4", border: "#D1FAE5", fg: "#10B981" },
+  red: { bg: "#FEF3F2", border: "#FEE4E2", fg: "#F04438" },
+  amber: { bg: "#FFFAEB", border: "#FEDF89", fg: "#B54708" },
+};
+
+type CallIconKind =
+  | "outgoing"
+  | "incoming"
+  | "missed"
+  | "rejected"
+  | "cancelled";
+
+/**
+ * Derives the label/subtitle/color/icon for an ended call card. Mirrors the
+ * Messenger/WhatsApp convention: distinguishes outgoing vs incoming using
+ * call.isOutgoing (based on call.initiatorId), not just message ownership.
+ */
+function getCallDisplay(call: MessageCall) {
+  const callTypeLabel =
+    call.callType === "video" ? "Appel vidéo" : "Appel audio";
+
+  switch (call.status) {
+    case "missed":
+      return {
+        label: call.isOutgoing ? "Appel sans réponse" : "Appel manqué",
+        subtitle: "Non répondu",
+        colorScheme: "red" as CallColorScheme,
+        icon: "missed" as CallIconKind,
+      };
+    case "rejected":
+      return {
+        label: call.isOutgoing ? "Appel refusé" : "Appel entrant refusé",
+        subtitle: "Refusé",
+        colorScheme: "red" as CallColorScheme,
+        icon: "rejected" as CallIconKind,
+      };
+    case "cancelled":
+      return {
+        label: call.isOutgoing ? "Appel annulé" : "Appel manqué",
+        subtitle: call.isOutgoing ? "Annulé" : "Manqué",
+        colorScheme: "amber" as CallColorScheme,
+        icon: "cancelled" as CallIconKind,
+      };
+    case "completed":
+    default: {
+      const duration = call.duration || 0;
+      const durationText =
+        duration > 0
+          ? `${Math.floor(duration / 60)}:${String(duration % 60).padStart(2, "0")}`
+          : "0:00";
+      return {
+        label: `${callTypeLabel} ${call.isOutgoing ? "sortant" : "entrant"}`,
+        subtitle: durationText,
+        colorScheme: "green" as CallColorScheme,
+        icon: (call.isOutgoing ? "outgoing" : "incoming") as CallIconKind,
+      };
+    }
+  }
+}
 
 export default function MessageBubble({
   message,
@@ -108,6 +176,11 @@ export default function MessageBubble({
     : "other";
 
   const isImageFile = isFileMessage && fileCategory === "image";
+
+  // Real original filename from upload metadata (message.file.name), never
+  // the message's own text content — falls back to a generic label only if
+  // no filename metadata is available at all (should not happen in practice).
+  const displayedFileName = message.file?.name || "Fichier";
 
   const handleOpenFile = () => {
     if (!message.file?.url) return;
@@ -702,125 +775,98 @@ export default function MessageBubble({
                       )}
                     </Box>
                   </Box>
-                ) : (
-                  /* ── ENDED/MISSED/REJECTED CALL - Regular size ── */
-                  <Box
-                    sx={{
-                      width: "fit-content",
-                      maxWidth: isMobile ? "100%" : 280,
-                      borderRadius: isMobile ? "12px" : "14px",
-                      backgroundColor:
-                        message.call?.status === "missed"
-                          ? "#FEF3F2"
-                          : message.call?.status === "rejected"
-                            ? "#FEF3F2"
-                            : "#F0FDF4",
-                      border:
-                        message.call?.status === "missed"
-                          ? "1px solid #FEE4E2"
-                          : message.call?.status === "rejected"
-                            ? "1px solid #FEE4E2"
-                            : "1px solid #D1FAE5",
-                      px: isMobile ? 1.25 : 1.5,
-                      py: isMobile ? 1 : 1.25,
-                    }}
-                  >
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: isMobile ? 1 : 1.25,
-                      }}
-                    >
+                ) : message.call ? (
+                  /* ── ENDED/MISSED/REJECTED/CANCELLED CALL - Regular size ── */
+                  (() => {
+                    const display = getCallDisplay(message.call);
+                    const colors = CALL_COLOR_SCHEMES[display.colorScheme];
+
+                    return (
                       <Box
                         sx={{
-                          width: isMobile ? 36 : 40,
-                          height: isMobile ? 36 : 40,
-                          borderRadius: "10px",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          backgroundColor:
-                            message.call?.status === "missed"
-                              ? alpha("#F04438", 0.08)
-                              : message.call?.status === "rejected"
-                                ? alpha("#F04438", 0.08)
-                                : alpha("#10B981", 0.08),
-                          color:
-                            message.call?.status === "missed"
-                              ? "#F04438"
-                              : message.call?.status === "rejected"
-                                ? "#F04438"
-                                : "#10B981",
-                          flexShrink: 0,
+                          width: "fit-content",
+                          maxWidth: isMobile ? "100%" : 280,
+                          borderRadius: isMobile ? "12px" : "14px",
+                          backgroundColor: colors.bg,
+                          border: `1px solid ${colors.border}`,
+                          px: isMobile ? 1.25 : 1.5,
+                          py: isMobile ? 1 : 1.25,
                         }}
                       >
-                        {message.call?.status === "missed" ? (
-                          <PhoneMissed size={isMobile ? 18 : 20} />
-                        ) : message.call?.status === "rejected" ? (
-                          <PhoneOff size={isMobile ? 18 : 20} />
-                        ) : message.call?.callType === "video" ? (
-                          <Video size={isMobile ? 18 : 20} />
-                        ) : (
-                          <Phone size={isMobile ? 18 : 20} />
-                        )}
-                      </Box>
-
-                      <Box sx={{ minWidth: 0, flex: 1 }}>
-                        <Typography
-                          sx={{
-                            fontSize: isMobile ? "13px" : "14px",
-                            fontWeight: 600,
-                            lineHeight: 1.4,
-                            color: theme.palette.text.primary,
-                            wordBreak: "break-word",
-                            mb: 0.25,
-                          }}
-                        >
-                          {message.call?.status === "missed"
-                            ? message.mine
-                              ? "Appel non répondu"
-                              : "Appel manqué"
-                            : message.call?.status === "rejected"
-                              ? "Appel refusé"
-                              : message.call?.callType === "video"
-                                ? "Appel vidéo"
-                                : "Appel audio"}
-                        </Typography>
-
                         <Box
                           sx={{
                             display: "flex",
                             alignItems: "center",
-                            gap: 0.5,
+                            gap: isMobile ? 1 : 1.25,
                           }}
                         >
-                          <Clock
-                            size={isMobile ? 12 : 13}
-                            color={theme.palette.text.secondary}
-                          />
-                          <Typography
+                          <Box
                             sx={{
-                              fontSize: isMobile ? "11px" : "12px",
-                              lineHeight: 1.4,
-                              color: theme.palette.text.secondary,
-                              fontWeight: 400,
+                              width: isMobile ? 36 : 40,
+                              height: isMobile ? 36 : 40,
+                              borderRadius: "10px",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              backgroundColor: alpha(colors.fg, 0.08),
+                              color: colors.fg,
+                              flexShrink: 0,
                             }}
                           >
-                            {message.call?.status === "completed" &&
-                            message.call?.duration
-                              ? `${Math.floor(message.call.duration / 60)}:${String(message.call.duration % 60).padStart(2, "0")}`
-                              : message.call?.status === "missed"
-                                ? "Non répondu"
-                                : message.call?.status === "rejected"
-                                  ? "Refusé"
-                                  : "Terminé"}
-                          </Typography>
+                            {display.icon === "missed" ? (
+                              <PhoneMissed size={isMobile ? 18 : 20} />
+                            ) : display.icon === "rejected" ||
+                              display.icon === "cancelled" ? (
+                              <PhoneOff size={isMobile ? 18 : 20} />
+                            ) : display.icon === "outgoing" ? (
+                              <PhoneOutgoing size={isMobile ? 18 : 20} />
+                            ) : (
+                              <PhoneIncoming size={isMobile ? 18 : 20} />
+                            )}
+                          </Box>
+
+                          <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Typography
+                              sx={{
+                                fontSize: isMobile ? "13px" : "14px",
+                                fontWeight: 600,
+                                lineHeight: 1.4,
+                                color: theme.palette.text.primary,
+                                wordBreak: "break-word",
+                                mb: 0.25,
+                              }}
+                            >
+                              {display.label}
+                            </Typography>
+
+                            <Box
+                              sx={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 0.5,
+                              }}
+                            >
+                              <Clock
+                                size={isMobile ? 12 : 13}
+                                color={theme.palette.text.secondary}
+                              />
+                              <Typography
+                                sx={{
+                                  fontSize: isMobile ? "11px" : "12px",
+                                  lineHeight: 1.4,
+                                  color: theme.palette.text.secondary,
+                                  fontWeight: 400,
+                                }}
+                              >
+                                {display.subtitle}
+                              </Typography>
+                            </Box>
+                          </Box>
                         </Box>
                       </Box>
-                    </Box>
-                  </Box>
-                )}
+                    );
+                  })()
+                ) : null}
               </>
             ) : isAppointmentMessage ? (
               <>
@@ -1022,6 +1068,7 @@ export default function MessageBubble({
                   >
                     <Typography
                       noWrap
+                      title={displayedFileName}
                       sx={{
                         flex: 1,
                         fontSize: isMobile ? 10 : 11,
@@ -1030,7 +1077,7 @@ export default function MessageBubble({
                         lineHeight: 1.3,
                       }}
                     >
-                      {message.file!.name}
+                      {displayedFileName}
                     </Typography>
 
                     <IconButton
@@ -1203,6 +1250,7 @@ export default function MessageBubble({
                       <Box sx={{ minWidth: 0, flex: 1 }}>
                         <Typography
                           noWrap
+                          title={displayedFileName}
                           sx={{
                             fontSize: isMobile ? "12px" : "13px",
                             fontWeight: 600,
@@ -1210,7 +1258,7 @@ export default function MessageBubble({
                             color: "inherit",
                           }}
                         >
-                          {message.file?.name}
+                          {displayedFileName}
                         </Typography>
 
                         <Typography

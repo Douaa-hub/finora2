@@ -28,6 +28,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private activeCalls: Map<number, number> = new Map();
   private callParticipants: Map<number, Set<number>> = new Map();
   private callTimeouts: Map<number, ReturnType<typeof setTimeout>> = new Map();
+  // Tracks who is currently flagged as "typing" per room, so we can clear it on disconnect.
+  private typingUsers: Map<number, Set<number>> = new Map();
 
   constructor(
     private chatService: ChatService,
@@ -93,6 +95,19 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       if (updatedSockets.length === 0) {
         this.userSockets.delete(userId);
+
+        // Clear any "typing" indicator this user left behind and notify the
+        // room(s) so peers don't see it stuck after an abrupt disconnect
+        // (tab close, network loss, refresh).
+        this.typingUsers.forEach((users, roomId) => {
+          if (users.delete(userId)) {
+            this.server.to(`room:${roomId}`).emit('user:typing', {
+              roomId,
+              userId,
+              typing: false,
+            });
+          }
+        });
 
         // If user was in any active calls, notify other participants
         this.callParticipants.forEach((participants, roomId) => {
@@ -243,8 +258,24 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage('typing:start')
-  handleTypingStart(@ConnectedSocket() client: Socket, @MessageBody() data: { roomId: number }) {
+  async handleTypingStart(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: number }
+  ) {
     const userId = client.data.userId;
+
+    try {
+      // Même vérification d'appartenance que handleJoinRoom : lève une
+      // exception si la room n'existe pas ou si l'utilisateur n'en fait pas partie.
+      await this.chatService.getRoomById(data.roomId, userId);
+    } catch {
+      return;
+    }
+
+    const roomTypers = this.typingUsers.get(data.roomId) || new Set<number>();
+    roomTypers.add(userId);
+    this.typingUsers.set(data.roomId, roomTypers);
+
     client.to(`room:${data.roomId}`).emit('user:typing', {
       roomId: data.roomId,
       userId,
@@ -253,8 +284,20 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage('typing:stop')
-  handleTypingStop(@ConnectedSocket() client: Socket, @MessageBody() data: { roomId: number }) {
+  async handleTypingStop(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: number }
+  ) {
     const userId = client.data.userId;
+
+    try {
+      await this.chatService.getRoomById(data.roomId, userId);
+    } catch {
+      return;
+    }
+
+    this.typingUsers.get(data.roomId)?.delete(userId);
+
     client.to(`room:${data.roomId}`).emit('user:typing', {
       roomId: data.roomId,
       userId,
@@ -778,7 +821,16 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
             this.callTimeouts.delete(data.roomId);
           }
 
-          const call = await this.callService.endCall(callId, data.duration || 0);
+          // If the call never made it past "initiated", the callee never
+          // accepted/joined — this is the caller cancelling before pickup,
+          // not a real hangup after a conversation. Distinguish the two so
+          // the card can say "Annulé" instead of "Terminé - 0:00".
+          const preEndCall = await this.callService.getCallById(callId);
+          const wasNeverAnswered = preEndCall?.status === 'initiated';
+
+          const call = wasNeverAnswered
+            ? await this.callService.cancelCall(callId)
+            : await this.callService.endCall(callId, data.duration || 0);
           this.activeCalls.delete(data.roomId);
           this.callParticipants.delete(data.roomId);
 
@@ -793,16 +845,22 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
             (msg) => msg.callId === callId && msg.type === 'call'
           );
 
-          if (ongoingMessage) {
-            // Update the existing message
-            const duration = data.duration || 0;
-            const minutes = Math.floor(duration / 60);
-            const seconds = duration % 60;
-            const durationText =
-              duration > 0 ? `${minutes}:${seconds.toString().padStart(2, '0')}` : '0:00';
+          const duration = data.duration || 0;
+          const minutes = Math.floor(duration / 60);
+          const seconds = duration % 60;
+          const durationText =
+            duration > 0 ? `${minutes}:${seconds.toString().padStart(2, '0')}` : '0:00';
+          const callTypeLabel = call.callType === 'video' ? 'Appel vidéo' : 'Appel vocal';
+          const endedContent = wasNeverAnswered
+            ? `${callTypeLabel} annulé`
+            : `${callTypeLabel} - ${durationText}`;
+          const finalStatus = wasNeverAnswered ? 'cancelled' : 'completed';
 
+          if (ongoingMessage) {
+            // Group calls (and any call that already got a "started"/"ongoing"
+            // message) — update that message in place.
             await this.chatService.updateMessage(ongoingMessage.id, {
-              content: `${call.callType === 'video' ? 'Appel vidéo' : 'Appel vocal'} - ${durationText}`,
+              content: endedContent,
             });
 
             // Broadcast to entire room
@@ -810,9 +868,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
               messageId: ongoingMessage.id,
               roomId: data.roomId,
               callId: call.id,
-              status: 'completed',
+              status: finalStatus,
               duration: data.duration || 0,
-              content: `${call.callType === 'video' ? 'Appel vidéo' : 'Appel vocal'} - ${durationText}`,
+              content: endedContent,
             });
 
             // Also send to ALL participants directly (including the one who ended)
@@ -826,12 +884,25 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
                   messageId: ongoingMessage.id,
                   roomId: data.roomId,
                   callId: call.id,
-                  status: 'completed',
+                  status: finalStatus,
                   duration: data.duration || 0,
-                  content: `${call.callType === 'video' ? 'Appel vidéo' : 'Appel vocal'} - ${durationText}`,
+                  content: endedContent,
                 });
               });
             });
+          } else {
+            // 1:1 calls never get a "started"/"ongoing" message (only group
+            // calls do, at call:initiate) — so there is nothing to update.
+            // Create the completion card directly instead of silently
+            // dropping it.
+            const callMessage = await this.chatService.sendMessage(call.initiatorId, {
+              roomId: data.roomId,
+              content: endedContent,
+              type: 'call',
+              callId: call.id,
+            });
+
+            this.server.to(`room:${data.roomId}`).emit('message:new', callMessage);
           }
 
           // Notify all room members that call ended

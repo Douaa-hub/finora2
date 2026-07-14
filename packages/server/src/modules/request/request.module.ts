@@ -9,12 +9,11 @@ import { JwtTokenService } from 'src/common/jwt/jwt-token.service';
 import { FileUploadService } from 'src/common/services/file-upload.service';
 import { AuthService } from '../auth/auth.service';
 import { MailService } from '../mail/mail.service';
-import { NotificationService } from '../notification/notification.service';
-import { NotificationGateway } from '../notification/notification.gateway';
+import { NotificationModule } from '../notification/notification.module';
 import { ConfigService } from '@nestjs/config';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, NotificationModule],
   controllers: [RequestController],
   providers: [
     RequestService,
@@ -25,8 +24,6 @@ import { ConfigService } from '@nestjs/config';
     MailService,
     FileUploadService,
     JwtService,
-    NotificationService,
-    NotificationGateway,
     ConfigService,
   ],
   exports: [RequestService],

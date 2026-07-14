@@ -3,7 +3,7 @@ model Call {
   roomId       Int
   initiatorId  Int
   callType     String    // "audio" | "video"
-  status       String    @default("initiated") // "initiated" | "ongoing" | "completed" | "missed" | "rejected"
+  status       String    @default("initiated") // "initiated" | "ongoing" | "completed" | "missed" | "rejected" | "cancelled"
   participants String[]  // Array of participant user IDs
   startedAt    DateTime  @default(now())
   endedAt      DateTime?

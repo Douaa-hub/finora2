@@ -1432,21 +1432,34 @@ export class ChatService {
     const data = await Promise.all(
       messages.map(async (msg) => {
         let fileUrl: string | null = null;
-        if (msg.content) {
+        // content is the raw MinIO object path UNLESS the file was sent
+        // alongside a caption, in which case sendMessage() stores it as
+        // JSON {text, file} (same format getRoomMessages() already parses).
+        let fileObjectName = msg.content;
+        if (msg.content && msg.content.startsWith('{') && msg.content.includes('"file"')) {
+          try {
+            const parsed = JSON.parse(msg.content);
+            fileObjectName = parsed.file;
+          } catch {
+            // Malformed JSON — fall back to treating content as the raw path
+          }
+        }
+
+        if (fileObjectName) {
           try {
             if (msg.type === 'image') {
-              fileUrl = await this.minioService.getPresignedUrl(msg.content, 7 * 24 * 60 * 60);
+              fileUrl = await this.minioService.getPresignedUrl(fileObjectName, 7 * 24 * 60 * 60);
             } else {
-              const exists = await this.minioService.fileExists(msg.content);
+              const exists = await this.minioService.fileExists(fileObjectName);
               if (exists) {
-                fileUrl = await this.minioService.getPresignedUrl(msg.content, 7 * 24 * 60 * 60);
+                fileUrl = await this.minioService.getPresignedUrl(fileObjectName, 7 * 24 * 60 * 60);
               }
             }
           } catch {
             fileUrl = null;
           }
         }
-        return { ...msg, fileUrl };
+        return { ...msg, content: fileObjectName ?? msg.content, fileUrl };
       })
     );
 

@@ -154,6 +154,7 @@ export function NotificationsPopover({
     if (!roleCode) return null;
     const role = String(roleCode).toLowerCase();
     if (role.includes("client")) return "client";
+    if (role.includes("collaborat")) return "collaborateur";
     if (
       role.includes("accountant") ||
       role.includes("comptable") ||
@@ -245,6 +246,9 @@ export function NotificationsPopover({
         postedAt: n.createdAt ?? null,
         actionUrl,
         onNavigate: handleNavigate,
+        onMarkAsRead: (id: string) => {
+          void markAsRead(Number(id)).catch(() => {});
+        },
         canRespond,
         isProcessing: processingId === n.id,
         onAccept: canRespond

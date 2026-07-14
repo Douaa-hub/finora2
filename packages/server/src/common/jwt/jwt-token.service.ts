@@ -75,7 +75,7 @@ export class JwtTokenService {
 
   // Delete refresh token
   public async deleteOldRefreshToken(tokenId: number): Promise<void> {
-    await this.prisma.refreshToken.delete({
+    await this.prisma.refreshToken.deleteMany({
       where: { id: tokenId },
     });
   }
