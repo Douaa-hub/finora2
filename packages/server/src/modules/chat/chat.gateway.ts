@@ -125,16 +125,36 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
               });
             });
 
-            // If no participants left, clean up the call
-            if (participants.size === 0) {
-              const callId = this.activeCalls.get(roomId);
-              if (callId) {
-                this.callService.endCall(callId, 0).catch(() => {
+            // Clean up the call if no one is left OR it's a 1:1 call —
+            // same rule as handleCallEnd, so an abrupt disconnect (tab
+            // closed, network lost) ends a 1:1 call for the remaining
+            // participant instead of leaving them stuck on "waiting".
+            const callId = this.activeCalls.get(roomId);
+            if (callId) {
+              this.callService
+                .getCallById(callId)
+                .then((call) => {
+                  const isOneOnOneCall = (call?.participants?.length ?? 0) <= 2;
+                  if (participants.size !== 0 && !isOneOnOneCall) return;
+
+                  const wasNeverAnswered = call?.status === 'initiated';
+                  const finish = wasNeverAnswered
+                    ? this.callService.cancelCall(callId)
+                    : this.callService.endCall(callId, 0);
+
+                  return finish.then(() => {
+                    this.activeCalls.delete(roomId);
+                    this.callParticipants.delete(roomId);
+                    this.server.to(`room:${roomId}`).emit('call:ended', {
+                      endedBy: userId,
+                      roomId,
+                      callEnded: true,
+                    });
+                  });
+                })
+                .catch(() => {
                   // Error ending call on disconnect
                 });
-                this.activeCalls.delete(roomId);
-                this.callParticipants.delete(roomId);
-              }
             }
           }
         });
@@ -812,21 +832,26 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
           });
         });
 
-        // Only end the call if no one is left
-        if (participants.size === 0) {
+        // Fetch the call once — used both to distinguish "cancelled before
+        // pickup" from a real hangup, and to detect whether this is a 1:1
+        // call (participants.length <= 2 at creation time).
+        const preEndCall = await this.callService.getCallById(callId);
+        const wasNeverAnswered = preEndCall?.status === 'initiated';
+
+        // 1:1 calls must end for BOTH parties the instant either one hangs
+        // up (Messenger/WhatsApp semantics) — waiting for "everyone left"
+        // only makes sense for group calls, where other participants may
+        // still be talking after one person exits.
+        const isOneOnOneCall = (preEndCall?.participants?.length ?? 0) <= 2;
+
+        // End the call if no one is left OR it's a 1:1 call being hung up
+        if (participants.size === 0 || isOneOnOneCall) {
           // Clear timeout
           const timeout = this.callTimeouts.get(data.roomId);
           if (timeout) {
             clearTimeout(timeout);
             this.callTimeouts.delete(data.roomId);
           }
-
-          // If the call never made it past "initiated", the callee never
-          // accepted/joined — this is the caller cancelling before pickup,
-          // not a real hangup after a conversation. Distinguish the two so
-          // the card can say "Annulé" instead of "Terminé - 0:00".
-          const preEndCall = await this.callService.getCallById(callId);
-          const wasNeverAnswered = preEndCall?.status === 'initiated';
 
           const call = wasNeverAnswered
             ? await this.callService.cancelCall(callId)
@@ -905,8 +930,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
             this.server.to(`room:${data.roomId}`).emit('message:new', callMessage);
           }
 
-          // Notify all room members that call ended
-          client.to(`room:${data.roomId}`).emit('call:ended', {
+          // Notify all room members that call ended (this.server, not
+          // client.to, so it also reaches other tabs/devices of the user
+          // who just hung up).
+          this.server.to(`room:${data.roomId}`).emit('call:ended', {
             endedBy: userId,
             roomId: data.roomId,
             callEnded: true,

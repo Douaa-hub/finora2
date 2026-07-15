@@ -336,6 +336,16 @@ export function GlobalCallProvider({ children }: { children: ReactNode }) {
       },
     );
 
+    // Caller side: the callee never answered within the ring timeout.
+    // Without this, the caller's own screen stays stuck on "En attente..."
+    // forever since it never receives call:ended in that case.
+    socketInstance.on(
+      "call:missed",
+      (_data: { roomId: number; callId: number }) => {
+        resetCallState();
+      },
+    );
+
     socketInstance.on(
       "call:user-left",
       (data: { userId: number; roomId: number }) => {
@@ -355,6 +365,7 @@ export function GlobalCallProvider({ children }: { children: ReactNode }) {
       socketInstance.off("call:user-left");
       socketInstance.off("call:rejected");
       socketInstance.off("call:ended");
+      socketInstance.off("call:missed");
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
