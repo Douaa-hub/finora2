@@ -2551,6 +2551,7 @@ export default function ChatbotWidget() {
         const result = await sendMessage({
           message: messageText,
           sessionId: activeSessionId ?? undefined,
+          attachment,
         }).unwrap();
 
         if (!activeSessionId) {
