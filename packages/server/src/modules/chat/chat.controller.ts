@@ -60,7 +60,15 @@ export class ChatController {
   @ApiResponse({ status: 201, description: 'Salle créée avec succès' })
   async createRoom(@Request() req, @Body() dto: CreateRoomDto) {
     const userId = req.user?.id ?? req.user?.sub;
-    return this.chatService.createRoom(Number(userId), dto);
+    const room = await this.chatService.createRoom(Number(userId), dto);
+    // room.participants is string[] (Prisma ChatRoom.participants) — join
+    // each participant's already-connected socket(s) to the new room so
+    // message:new reaches them from the very first message, without
+    // waiting for their next reconnect.
+    room.participants.forEach((participantId) => {
+      this.chatGateway.joinUserToRoom(Number(participantId), room.id);
+    });
+    return room;
   }
 
   @Get('rooms')
@@ -158,7 +166,9 @@ export class ChatController {
     @Body('participantId', ParseIntPipe) participantId: number
   ) {
     const userId = req.user?.id ?? req.user?.sub;
-    return this.chatService.addParticipant(id, Number(userId), participantId);
+    const result = await this.chatService.addParticipant(id, Number(userId), participantId);
+    this.chatGateway.joinUserToRoom(participantId, id);
+    return result;
   }
 
   @Delete('rooms/:id/participants/:participantId')

@@ -261,7 +261,7 @@ export const chatApi = createApi({
         };
       },
       providesTags: [{ type: "ChatRooms", id: "LIST" }],
-      keepUnusedDataFor: 0,
+      keepUnusedDataFor: 30,
     }),
 
     getRoomById: builder.query<ChatRoom, number>({
@@ -424,11 +424,10 @@ export const chatApi = createApi({
           patchResult.undo();
         }
       },
-      invalidatesTags: [
-        { type: "ChatRooms", id: "LIST" },
-        { type: "ChatMessages", id: "RECENT" },
-        { type: "ChatMessages", id: "UNREAD_COUNT" },
-      ],
+      // No invalidation — the room's unreadCount (getUserRooms) and the
+      // recent-messages preview (getRecentMessages) are already updated
+      // optimistically above / by the caller. Invalidating here just forces
+      // redundant refetches on every conversation click.
     }),
 
     getRecentMessages: builder.query<RecentMessagesResponse, void>({

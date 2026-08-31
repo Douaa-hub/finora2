@@ -593,18 +593,21 @@ export class ChatService {
           })
         : allRooms;
 
-    // Apply search filter: keep only rooms where at least one other participant
-    // has a name, username or email that contains the search term.
+    // Apply search filter: keep rooms whose own name matches (groups) OR
+    // where at least one other participant has a name, username or email
+    // that contains the search term (unchanged behavior for direct rooms).
     if (search) {
       const term = search.trim().toLowerCase();
-      filtered = filtered.filter((room) =>
-        room.participantProfiles.some((p: any) => {
+      filtered = filtered.filter((room) => {
+        const nameMatch = (room.name ?? '').toLowerCase().includes(term);
+        const participantMatch = room.participantProfiles.some((p: any) => {
           const fullName = [p?.firstName, p?.lastName].filter(Boolean).join(' ').toLowerCase();
           const username = (p?.username ?? '').toLowerCase();
           const email = (p?.email ?? '').toLowerCase();
           return fullName.includes(term) || username.includes(term) || email.includes(term);
-        })
-      );
+        });
+        return nameMatch || participantMatch;
+      });
     }
 
     // Apply date filter: keep only rooms whose lastActivity falls on the given date (UTC).

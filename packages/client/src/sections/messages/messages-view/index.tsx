@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import Box from "@mui/material/Box";
 import Paper from "@mui/material/Paper";
 import CircularProgress from "@mui/material/CircularProgress";
+import LinearProgress from "@mui/material/LinearProgress";
 import { useTheme } from "@mui/material/styles";
 import useMediaQuery from "@mui/material/useMediaQuery";
 import type { Dayjs } from "dayjs";
@@ -230,13 +231,18 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
   roomsParamsRef.current = roomsParams;
 
   // ── API data ──────────────────────────────────────────────────────────────
-  const { conversations: apiConversations, isLoading: roomsLoading } =
-    useConversations(roomsParams);
-  const { data: roomsResponse } = useGetUserRoomsQuery(roomsParams);
-  const rawRooms = useMemo(
-    () => roomsResponse?.data ?? [],
-    [roomsResponse?.data],
-  );
+  // Single subscription for the current filters — feeds both the mapped
+  // conversations and the raw ChatRoom[]/pagination info this component
+  // needs, instead of two independent useGetUserRoomsQuery(roomsParams)
+  // calls racing/aborting each other for the same cache entry.
+  const {
+    conversations: apiConversations,
+    rooms: rawRooms,
+    roomsResponse,
+    isLoading: roomsLoading,
+    isFetching: roomsResponseFetching,
+    hasData: roomsHasData,
+  } = useConversations(roomsParams);
 
   // Update hasMore when response changes
   useEffect(() => {
@@ -357,9 +363,19 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
 
   // Load more conversations (infinite scroll)
   const handleLoadMoreConversations = useCallback(() => {
-    if (!hasMoreConversations || roomsLoading) return;
+    // Block on isFetching, not just isLoading — isLoading only covers the
+    // very first fetch for a given page; isFetching stays true for the
+    // whole in-flight duration of every subsequent page, which is what
+    // actually needs to gate a scroll-triggered re-call here.
+    if (roomsResponseFetching) return;
+    // Guard directly against the freshest server-reported page/totalPages
+    // instead of relying solely on the debounced `hasMoreConversations`
+    // state, which can lag one render behind and allow one extra page past
+    // the last one.
+    if (roomsResponse && roomsResponse.page >= roomsResponse.totalPages) return;
+    if (!hasMoreConversations) return;
     setConversationsPage((prev) => prev + 1);
-  }, [hasMoreConversations, roomsLoading]);
+  }, [hasMoreConversations, roomsResponseFetching, roomsResponse]);
 
   const [triggerSendMessage] = useSendMessageMutation();
   const [triggerGetOlderMessages] = useLazyGetRoomMessagesQuery();
@@ -440,6 +456,26 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
         return;
       }
 
+      // Defensive: the sender's own message just arrived, so they can no
+      // longer be "typing" this message — clear it locally even if their
+      // typing:stop event was lost or arrived out of order.
+      const typingKey = `${msg.roomId}:${msg.senderId}`;
+      const pendingTypingTimeout = typingSafetyTimeoutsRef.current.get(typingKey);
+      if (pendingTypingTimeout) {
+        clearTimeout(pendingTypingTimeout);
+        typingSafetyTimeoutsRef.current.delete(typingKey);
+      }
+      setTypingUsersByRoom((prev) => {
+        const roomTypers = prev.get(msg.roomId);
+        if (!roomTypers?.has(msg.senderId)) return prev;
+        const updated = new Set(roomTypers);
+        updated.delete(msg.senderId);
+        const next = new Map(prev);
+        if (updated.size > 0) next.set(msg.roomId, updated);
+        else next.delete(msg.roomId);
+        return next;
+      });
+
       // 1. Inject into getRoomMessages cache for that room
       // Only update messages for the currently visible conversation.
       if (activeRoomId && msg.roomId === activeRoomId) {
@@ -486,10 +522,12 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
 
       // Helper that patches a getUserRooms cache entry
       const patchRoomsCache = (params: typeof roomsParamsRef.current) => {
+        let found = false;
         dispatch(
           chatApi.util.updateQueryData("getUserRooms", params, (draft) => {
             const room = draft.data.find((r) => r.id === msg.roomId);
             if (!room) return;
+            found = true;
 
             room.lastMessage = {
               id: msg.id,
@@ -514,13 +552,29 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
             }
           }),
         );
+        return found;
       };
 
       // Patch the active tab's cache (used for the conversation list)
-      patchRoomsCache(roomsParamsRef.current);
+      const foundInActiveTab = patchRoomsCache(roomsParamsRef.current);
 
       // Also patch all rooms cache for badge counts
-      patchRoomsCache(allRoomsParamsRef.current);
+      const foundInAllRooms = patchRoomsCache(allRoomsParamsRef.current);
+
+      // Genuinely new room this client has never fetched (e.g. just added
+      // as a participant) — neither cache had an entry to patch. Reset to
+      // page 1 (where a just-active room sorts to) AND force a refetch:
+      // resetting the page alone won't trigger anything if we're already on
+      // page 1, and invalidating alone won't surface the room if we're
+      // still viewing page 2/3 — both are needed together. The backend
+      // persists the message before emitting message:new, so this refetch
+      // will return the new room with its lastMessage already set.
+      if (!foundInActiveTab && !foundInAllRooms) {
+        setConversationsPage(1);
+        dispatch(
+          chatApi.util.invalidateTags([{ type: "ChatRooms", id: "LIST" }]),
+        );
+      }
 
       // Prevent stale optimistic preview overrides from overriding the
       // computed preview for the current authenticated user.
@@ -731,8 +785,12 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
         participants: memberIds,
       }).unwrap();
 
-      // createRoom mutation already invalidates ChatRooms LIST — the list will
-      // refetch automatically and include the new group.
+      // createRoom mutation invalidates ChatRooms LIST, but that only
+      // refetches whichever page is currently active — if the user had
+      // scrolled past page 1, the new group (sorted to the top by recency)
+      // would never show up there. Reset to page 1 so the refetch actually
+      // covers it.
+      setConversationsPage(1);
       setSelectedConversation(newRoom.id);
       // Explicitly join the new room's socket channel so real-time works immediately
       joinRoom(newRoom.id);
@@ -1273,6 +1331,24 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
           delete updated[selectedConversation];
           return updated;
         });
+
+        // onMessageNew never processes the sender's own message:new (isMine
+        // check), so it never refreshes accumulatedConversations for them
+        // the way it does for recipients — patch just this one conversation
+        // here, sender-side only, reusing the same preview/time/fullDate
+        // already computed above for conversationOverrides.
+        setAccumulatedConversations((prev) =>
+          prev.map((c) =>
+            c.id === selectedConversation
+              ? {
+                  ...c,
+                  preview: `Vous : ${previewText}`,
+                  time: lastMessage.time,
+                  fullDate: new Date().toISOString(),
+                }
+              : c,
+          ),
+        );
       } catch {
         // Keep optimistic message visible even on error
       }
@@ -1536,9 +1612,40 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
   // No backend search — the full list is loaded upfront (ROOMS_PAGE_SIZE = 500).
   // Backend now handles all filtering (search, categories, unread, date),
   // so just use apiConversations directly
+  // Accumulates conversations across pages for the CURRENT filters — a page
+  // fetch must never replace what's already loaded, only add to it.
+  // conversationsPage resets to 1 whenever the filters/search/date change
+  // (see the effects above), so treating page 1 as "start fresh" is enough
+  // to correctly reset this accumulator on a real filter change too.
+  const [accumulatedConversations, setAccumulatedConversations] = useState<
+    Conversation[]
+  >([]);
+
+  useEffect(() => {
+    if (!roomsHasData) return;
+    setAccumulatedConversations((prev) => {
+      if (conversationsPage === 1) return apiConversations;
+      // Upsert: refresh any already-accumulated conversation with the latest
+      // data from the current page's cache (live preview/unread updates
+      // pushed via the socket land in apiConversations but were previously
+      // discarded here just because the id already existed), then append
+      // any genuinely new conversation at the end — order of already-
+      // accumulated items is preserved, new ones go last.
+      const freshById = new Map(apiConversations.map((c) => [c.id, c]));
+      const merged = prev.map((c) => freshById.get(c.id) ?? c);
+      const existingIds = new Set(prev.map((c) => c.id));
+      const newOnes = apiConversations.filter((c) => !existingIds.has(c.id));
+      return newOnes.length > 0 ? [...merged, ...newOnes] : merged;
+    });
+  }, [apiConversations, conversationsPage, roomsHasData]);
+
   const filteredConversations = useMemo(() => {
-    return apiConversations;
-  }, [apiConversations]);
+    return [...accumulatedConversations].sort(
+      (a, b) =>
+        new Date(b.fullDate ?? 0).getTime() -
+        new Date(a.fullDate ?? 0).getTime(),
+    );
+  }, [accumulatedConversations]);
 
   useEffect(() => {
     if (filteredConversations.length === 0) return;
@@ -1561,17 +1668,27 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
     (c) => c.id === selectedConversation,
   );
 
+  // Only declare "no conversations" once a request for the current filters
+  // has actually resolved (now or previously) — never merely because a
+  // refetch is in flight or was aborted mid-way.
   const showEmptyState =
-    filteredConversations.length === 0 || !hasSelectedConversation;
+    roomsHasData &&
+    (filteredConversations.length === 0 || !hasSelectedConversation);
 
+  // Derived from the accumulated/displayed list (filteredConversations), not
+  // allConversations — the latter only reflects the current RTK page, so a
+  // conversation selected from an earlier accumulated page would otherwise
+  // resolve to undefined here once a later page is fetched.
   const currentConversation = useMemo(
-    () => allConversations.find((c) => c.id === selectedConversation),
-    [allConversations, selectedConversation],
+    () => filteredConversations.find((c) => c.id === selectedConversation),
+    [filteredConversations, selectedConversation],
   );
 
   const currentRoom = useMemo(
-    () => rawRooms.find((r) => r.id === selectedConversation),
-    [rawRooms, selectedConversation],
+    () =>
+      rawRooms.find((r) => r.id === selectedConversation) ??
+      allRoomsResponse?.data.find((r) => r.id === selectedConversation),
+    [rawRooms, selectedConversation, allRoomsResponse],
   );
 
   const recipientInfo = useMemo(() => {
@@ -1693,6 +1810,9 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
                   overflow: "hidden",
                 }}
               >
+                {roomsResponseFetching && !roomsLoading && (
+                  <LinearProgress sx={{ height: 2, flexShrink: 0 }} />
+                )}
                 <ConversationsList
                   conversations={filteredConversations}
                   selectedConversation={selectedConversation}
@@ -1711,7 +1831,10 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
                   userRole={userRoleForFilters}
                   onLoadMore={handleLoadMoreConversations}
                   hasMore={hasMoreConversations}
-                  isLoadingMore={roomsLoading && conversationsPage > 1}
+                  isLoadingMore={
+                    (roomsLoading || roomsResponseFetching) &&
+                    conversationsPage > 1
+                  }
                 />
               </Box>
             </Box>
@@ -1905,6 +2028,9 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
                   overflow: "hidden",
                 }}
               >
+                {roomsResponseFetching && !roomsLoading && (
+                  <LinearProgress sx={{ height: 2, flexShrink: 0 }} />
+                )}
                 <ConversationsList
                   conversations={filteredConversations}
                   selectedConversation={selectedConversation}
@@ -1923,7 +2049,10 @@ export default function MessagesView({ onOpenMedia }: MessagesViewProps) {
                   userRole={userRoleForFilters}
                   onLoadMore={handleLoadMoreConversations}
                   hasMore={hasMoreConversations}
-                  isLoadingMore={roomsLoading && conversationsPage > 1}
+                  isLoadingMore={
+                    (roomsLoading || roomsResponseFetching) &&
+                    conversationsPage > 1
+                  }
                 />
               </Paper>
 

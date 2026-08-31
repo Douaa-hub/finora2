@@ -51,6 +51,7 @@ type GlobalCallContextValue = {
   isVideoEnabled: boolean;
   mediaError: string | null;
   connectionErrors: Map<number, string>;
+  connectedPeers: Set<number>;
   callDuration: number;
 
   // Actions
@@ -122,6 +123,7 @@ export function GlobalCallProvider({ children }: { children: ReactNode }) {
   const {
     remoteStreams,
     connectionErrors,
+    connectedPeers,
     makeOffer,
     handleOffer,
     handleAnswer,
@@ -197,6 +199,10 @@ export function GlobalCallProvider({ children }: { children: ReactNode }) {
         roomId: number;
         offer: RTCSessionDescriptionInit;
       }) => {
+        // TEMPORARY DIAGNOSTIC LOGGING — timing-only, no logic change.
+        console.log(
+          `[CALL-TIMING] call:offer RECEIVED t=${Date.now()} userId=${data.callerId} roomId=${data.roomId} localStreamReady=${!!localStream}`,
+        );
         await handleOffer(data.callerId, data.offer);
       },
     );
@@ -208,6 +214,10 @@ export function GlobalCallProvider({ children }: { children: ReactNode }) {
         roomId: number;
         answer: RTCSessionDescriptionInit;
       }) => {
+        // TEMPORARY DIAGNOSTIC LOGGING — timing-only, no logic change.
+        console.log(
+          `[CALL-TIMING] call:answer RECEIVED t=${Date.now()} userId=${data.callerId} roomId=${data.roomId}`,
+        );
         await handleAnswer(data.callerId, data.answer);
       },
     );
@@ -502,6 +512,12 @@ export function GlobalCallProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    // TEMPORARY DIAGNOSTIC LOGGING — timing-only, no logic change. Remove
+    // once the accept-to-connected delay has been root-caused.
+    console.log(
+      `[CALL-TIMING] accept clicked t=${Date.now()} callId=${incomingCallData.callId} callerId=${incomingCallData.callerId} roomId=${incomingCallData.roomId} callType=${incomingCallData.callType}`,
+    );
+
     const incomingType = incomingCallData.callType;
     setCallType(incomingType);
     setRoomId(incomingCallData.roomId);
@@ -616,6 +632,7 @@ export function GlobalCallProvider({ children }: { children: ReactNode }) {
       isVideoEnabled,
       mediaError,
       connectionErrors,
+      connectedPeers,
       callDuration,
       initiateCall,
       joinCall,
@@ -641,6 +658,7 @@ export function GlobalCallProvider({ children }: { children: ReactNode }) {
       isVideoEnabled,
       mediaError,
       connectionErrors,
+      connectedPeers,
       callDuration,
       initiateCall,
       joinCall,

@@ -37,6 +37,19 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private jwtService: JwtService
   ) {}
 
+  /**
+   * Joins all of a user's currently connected sockets to a room — used when
+   * they're added to a room (new group, added participant) after already
+   * being connected, so they receive message:new etc. for it immediately
+   * instead of only from their next reconnect.
+   */
+  joinUserToRoom(userId: number, roomId: number) {
+    const socketIds = this.userSockets.get(userId) || [];
+    socketIds.forEach((socketId) => {
+      this.server.sockets.sockets.get(socketId)?.join(`room:${roomId}`);
+    });
+  }
+
   async handleConnection(client: Socket) {
     try {
       console.log(`[WebSocket] Client attempting to connect: ${client.id}`);
@@ -283,13 +296,24 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { roomId: number }
   ) {
     const userId = client.data.userId;
+    let inRoom = client.rooms.has(`room:${data.roomId}`);
 
-    try {
-      // Même vérification d'appartenance que handleJoinRoom : lève une
-      // exception si la room n'existe pas ou si l'utilisateur n'en fait pas partie.
-      await this.chatService.getRoomById(data.roomId, userId);
-    } catch {
-      return;
+    // Cas normal : le socket a déjà rejoint la room (join initial ou via
+    // room:join) → contrôle en mémoire, aucune requête DB.
+    // Cas rare : room:join vient d'être émis par le client (fire-and-forget,
+    // sans accusé de réception) mais n'a pas encore abouti côté serveur
+    // (celui-ci attend lui-même sa propre vérification DB). Dans ce cas,
+    // on retombe sur une vérification DB ponctuelle plutôt que de perdre
+    // silencieusement l'événement, puis on rejoint la room nous-mêmes pour
+    // refermer la fenêtre de course immédiatement.
+    if (!inRoom) {
+      try {
+        await this.chatService.getRoomById(data.roomId, userId);
+      } catch {
+        return;
+      }
+      client.join(`room:${data.roomId}`);
+      inRoom = true;
     }
 
     const roomTypers = this.typingUsers.get(data.roomId) || new Set<number>();
@@ -309,11 +333,16 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() data: { roomId: number }
   ) {
     const userId = client.data.userId;
+    let inRoom = client.rooms.has(`room:${data.roomId}`);
 
-    try {
-      await this.chatService.getRoomById(data.roomId, userId);
-    } catch {
-      return;
+    if (!inRoom) {
+      try {
+        await this.chatService.getRoomById(data.roomId, userId);
+      } catch {
+        return;
+      }
+      client.join(`room:${data.roomId}`);
+      inRoom = true;
     }
 
     this.typingUsers.get(data.roomId)?.delete(userId);
@@ -353,6 +382,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     try {
       const userId = client.data.userId;
+
+      // TEMPORARY DIAGNOSTIC LOGGING — logs only, no logic change. Remove
+      // once the missing-incoming-call regression is confirmed root-caused.
+      console.log('[CALL-INIT] caller=', userId);
+      console.log('[CALL-INIT] participants=', data.participants);
+      console.log(
+        '[CALL-INIT] userSockets=',
+        Object.fromEntries(this.userSockets),
+      );
 
       const call = await this.callService.createCall({
         roomId: data.roomId,
@@ -442,8 +480,25 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         if (participantId !== userId) {
           const targetSockets = this.userSockets.get(participantId);
 
+          // TEMPORARY DIAGNOSTIC LOGGING — logs only, no logic change.
+          console.log(
+            '[CALL-INIT] target participant=',
+            participantId,
+            'sockets=',
+            targetSockets,
+            'count=',
+            targetSockets?.length ?? 0,
+          );
+
           if (targetSockets && targetSockets.length > 0) {
             targetSockets.forEach((socketId) => {
+              // TEMPORARY DIAGNOSTIC LOGGING — logs only, no logic change.
+              console.log(
+                '[CALL-INIT] emitting call:incoming to socket=',
+                socketId,
+                'participantId=',
+                participantId,
+              );
               this.server.to(socketId).emit('call:incoming', {
                 callId: call.id,
                 callerId: userId,

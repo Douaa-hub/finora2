@@ -58,6 +58,10 @@ async function bootstrap() {
     cors: true, // Enable CORS at creation
   });
 
+  // Fire OnModuleDestroy / OnApplicationShutdown on SIGINT/SIGTERM so the local
+  // Whisper child process is terminated on every backend stop/restart.
+  app.enableShutdownHooks();
+
   // Additional CORS configuration
   app.enableCors({
     origin: '*',

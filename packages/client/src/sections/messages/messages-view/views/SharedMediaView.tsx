@@ -113,8 +113,6 @@ export default function SharedMediaView({
     return allFiles.filter((file) => {
       // Exclude old/broken files that have no usable file URL
       if (!file.previewUrl) return false;
-      // Remove files whose image URL failed to load at runtime
-      if (erroredIds.has(file.id)) return false;
 
       const matchesType = selectedType === "all" || file.type === selectedType;
       const matchesSearch =
@@ -125,7 +123,19 @@ export default function SharedMediaView({
 
   useEffect(() => {
     setPage(1);
-  }, [searchTerm, selectedType, conversationId, erroredIds]);
+  }, [searchTerm, selectedType, conversationId]);
+
+  // Ne remet PAS la page à 1 : ramène seulement `page` vers la dernière
+  // page encore valide si le nombre de fichiers filtrés a diminué sous la
+  // page courante (ex. des images retirées de erroredIds) — sans jamais
+  // avancer `page` ni interférer avec le reset ci-dessus.
+  useEffect(() => {
+    const totalPages = Math.max(
+      1,
+      Math.ceil(filteredFiles.length / ITEMS_PER_PAGE),
+    );
+    setPage((prev) => Math.min(prev, totalPages));
+  }, [filteredFiles]);
 
   const paginatedFiles = useMemo(() => {
     const startIndex = (page - 1) * ITEMS_PER_PAGE;

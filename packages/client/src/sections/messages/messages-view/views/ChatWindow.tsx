@@ -87,6 +87,7 @@ export default function ChatWindow({
 
   const [inputValue, setInputValue] = useState("");
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isTypingRef = useRef(false);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesBottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -118,6 +119,21 @@ export default function ChatWindow({
     messagesBottomRef.current?.scrollIntoView({ behavior: "instant" });
   }, [messages, conversationId]);
 
+  // Reveal the typing indicator when it appears, but only if the user is
+  // already near the bottom — never yank them down while they're reading
+  // older messages further up.
+  useEffect(() => {
+    if (!isRemoteTyping) return;
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const NEAR_BOTTOM_PX = 120;
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distanceFromBottom < NEAR_BOTTOM_PX) {
+      messagesBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [isRemoteTyping]);
+
   // Scroll listener — triggers older message loading when near the top
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -141,13 +157,29 @@ export default function ChatWindow({
     return () => container.removeEventListener("scroll", handleScroll);
   }, [hasMore, onLoadMore, isLoadingMore]);
 
-  // Emit typing start/stop when user types
+  // Emit typing:start only on the leading edge of a typing session (not on
+  // every keystroke), then auto-stop after 2s of inactivity.
   const handleInputChange = (val: string) => {
     setInputValue(val);
     if (!onTypingChange) return;
-    onTypingChange(true);
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      onTypingChange(true);
+    }
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => onTypingChange(false), 2000);
+    typingTimeoutRef.current = setTimeout(() => {
+      isTypingRef.current = false;
+      onTypingChange(false);
+    }, 2000);
+  };
+
+  // Cancels the pending auto-stop timer and resets typing state immediately —
+  // called right before sending, so typing:stop always fires on send rather
+  // than waiting for the 2s timeout.
+  const stopTypingNow = () => {
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    isTypingRef.current = false;
+    onTypingChange?.(false);
   };
 
   useEffect(
@@ -193,6 +225,8 @@ export default function ChatWindow({
     appointment?: MessageAppointment,
   ) => {
     if (!isCommunicationConfirmed) return;
+
+    stopTypingNow();
 
     const now = new Date();
     const formattedTime = now.toLocaleTimeString([], {

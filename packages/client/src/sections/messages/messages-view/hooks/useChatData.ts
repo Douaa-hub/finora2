@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useSelector } from "react-redux";
 import type { RootState } from "src/lib/store";
 import {
@@ -9,6 +9,7 @@ import {
   type ChatRoom,
   type ChatMessage,
   type GetRoomsParams,
+  type GetRoomsResponse,
 } from "src/lib/services/chatApi";
 import type {
   Conversation,
@@ -449,21 +450,60 @@ export function useConversations(params?: GetRoomsParams) {
   const {
     data: roomsResponse,
     isLoading,
+    isFetching,
+    isError,
     error,
   } = useGetUserRoomsQuery(params, {
     refetchOnMountOrArgChange: true,
     // No polling — real-time updates handled by WebSocket
   });
 
+  // Keep the last successfully fetched page for the CURRENT params around, so
+  // a transient refetch or an aborted in-flight request (roomsResponse
+  // momentarily undefined) never blanks the list — only a genuinely
+  // different set of params resets it. Updated from an effect (not during
+  // render) so we never mutate a ref based on a render that could be thrown
+  // away (e.g. StrictMode's double-invoke).
+  const paramsKey = JSON.stringify(params ?? null);
+  const lastGoodRef = useRef<{ key: string; response: GetRoomsResponse } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    if (roomsResponse) {
+      lastGoodRef.current = { key: paramsKey, response: roomsResponse };
+    }
+  }, [paramsKey, roomsResponse]);
+
+  const effectiveResponse =
+    roomsResponse ??
+    (lastGoodRef.current?.key === paramsKey
+      ? lastGoodRef.current.response
+      : undefined);
+
+  // True once we have a confirmed (possibly slightly stale) result for these
+  // exact params — lets callers tell "still loading, nothing yet" apart from
+  // "we know what this list looks like".
+  const hasData = effectiveResponse !== undefined;
+
   // Extract the array — roomsResponse is the paginated object, not the array itself
-  const rooms: ChatRoom[] = roomsResponse?.data ?? [];
+  const rooms: ChatRoom[] = effectiveResponse?.data ?? [];
 
   const conversations = useMemo(
     () => rooms.map((room) => mapRoomToConversation(room, uid)),
     [rooms, uid],
   );
 
-  return { conversations, isLoading, error };
+  return {
+    conversations,
+    rooms,
+    roomsResponse: effectiveResponse,
+    isLoading,
+    isFetching,
+    isError,
+    error,
+    hasData,
+  };
 }
 
 export function useRoomMessages(roomId: number, page: number, limit: number) {

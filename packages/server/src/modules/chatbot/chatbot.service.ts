@@ -6,6 +6,7 @@ import {
   InternalServerErrorException,
   OnModuleInit,
   OnModuleDestroy,
+  OnApplicationShutdown,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
@@ -43,13 +44,19 @@ function generateTitle(message: string): string {
 }
 
 @Injectable()
-export class ChatbotService implements OnModuleInit, OnModuleDestroy {
+export class ChatbotService
+  implements OnModuleInit, OnModuleDestroy, OnApplicationShutdown
+{
   private readonly logger = new Logger(ChatbotService.name);
   private readonly openai: OpenAI;
 
   private whisperProcess: ChildProcess | null = null;
   private whisperReady = false;
   private whisperPort = 8765;
+  /** In-flight startup — guarantees a single spawn attempt at any time. */
+  private whisperStartPromise: Promise<void> | null = null;
+  /** Guard so process-level shutdown listeners are registered only once. */
+  private shutdownGuardsRegistered = false;
 
   // Write tools that require explicit user confirmation before execution
   private static readonly WRITE_TOOLS = new Set([
@@ -106,14 +113,16 @@ export class ChatbotService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit(): Promise<void> {
-    await this.spawnWhisperService();
+    this.registerShutdownGuards();
+    await this.ensureWhisperService();
   }
 
-  onModuleDestroy(): void {
-    if (this.whisperProcess) {
-      this.whisperProcess.kill();
-      this.whisperProcess = null;
-    }
+  async onModuleDestroy(): Promise<void> {
+    await this.stopWhisperService();
+  }
+
+  async onApplicationShutdown(): Promise<void> {
+    await this.stopWhisperService();
   }
 
   private findWhisperScript(): string | null {
@@ -187,7 +196,11 @@ export class ChatbotService implements OnModuleInit, OnModuleDestroy {
       proc.stdout?.on('data', (chunk: Buffer) => {
         const line = chunk.toString().trim();
         if (line) this.logger.log(`[whisper-py] ${line}`);
-        if (line.includes('Model ready') || line.includes('Listening on')) {
+        // Only "Listening on" proves the HTTP server actually bound the port.
+        // "Model ready" is printed earlier, *before* the bind — trusting it made
+        // the service look ready even when the bind later failed (port taken),
+        // which is exactly what produced the silent voice-message fallback.
+        if (line.includes('Listening on')) {
           clearTimeout(timeout);
           this.whisperReady = true;
           this.logger.log('Local Whisper transcription enabled');
@@ -212,6 +225,198 @@ export class ChatbotService implements OnModuleInit, OnModuleDestroy {
         resolve();
       });
     });
+  }
+
+  /**
+   * Idempotent entry point for bringing up the local Whisper service.
+   *  - never starts a second instance while one is running or starting
+   *  - reuses an instance already listening on the port (e.g. left over from a
+   *    previous backend process that did not shut down cleanly)
+   *  - logs an explicit error when the port is held by something that is not Whisper
+   */
+  private async ensureWhisperService(): Promise<void> {
+    if (this.whisperReady && this.whisperProcess) return;
+    if (this.whisperStartPromise) return this.whisperStartPromise;
+
+    this.whisperStartPromise = (async () => {
+      // A child we own is already alive — nothing to do.
+      if (this.whisperProcess && this.whisperProcess.exitCode === null) return;
+
+      const probe = await this.probeWhisperService();
+      if (probe === 'whisper') {
+        this.whisperReady = true;
+        this.logger.log(
+          `[whisper] Reusing Whisper service already listening on 127.0.0.1:${this.whisperPort}`
+        );
+        return;
+      }
+      if (probe === 'occupied') {
+        this.logger.error(
+          `[whisper] Port ${this.whisperPort} is in use by a process that is NOT the Whisper service — ` +
+            `audio transcription disabled. Stop that process or set WHISPER_PORT to a free port.`
+        );
+        return;
+      }
+      // probe === 'free' → safe to spawn a fresh instance
+      await this.spawnWhisperService();
+    })();
+
+    try {
+      await this.whisperStartPromise;
+    } finally {
+      this.whisperStartPromise = null;
+    }
+  }
+
+  /**
+   * Inspect what — if anything — is listening on 127.0.0.1:WHISPER_PORT.
+   *  'whisper'  → the transcription service answered with its known JSON shape
+   *  'occupied' → something holds the port but it is not our Whisper service
+   *  'free'     → nothing is listening; safe to spawn
+   */
+  private probeWhisperService(): Promise<'whisper' | 'occupied' | 'free'> {
+    return new Promise((resolve) => {
+      const body = JSON.stringify({ ping: true });
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: this.whisperPort,
+          path: '/transcribe',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+          },
+          timeout: 2000,
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (c) => {
+            data += c;
+          });
+          res.on('end', () => {
+            // whisper_service.py always replies with JSON holding `text` or `error`.
+            try {
+              const parsed = JSON.parse(data) as { text?: string; error?: string };
+              if (typeof parsed.text === 'string' || typeof parsed.error === 'string') {
+                resolve('whisper');
+                return;
+              }
+            } catch {
+              /* not JSON → not our service */
+            }
+            resolve('occupied');
+          });
+        }
+      );
+
+      req.on('error', (err: NodeJS.ErrnoException) => {
+        if (
+          err.code === 'ECONNREFUSED' ||
+          err.code === 'ECONNRESET' ||
+          err.code === 'EHOSTUNREACH'
+        ) {
+          resolve('free');
+        } else {
+          this.logger.warn(`[whisper] Port probe error (${err.code ?? err.message})`);
+          resolve('occupied');
+        }
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        // Connection accepted but no answer → something is holding the port.
+        resolve('occupied');
+      });
+
+      req.write(body);
+      req.end();
+    });
+  }
+
+  /** Terminate the Whisper child process. Idempotent and Windows-safe. */
+  private async stopWhisperService(): Promise<void> {
+    const proc = this.whisperProcess;
+    this.whisperReady = false;
+    this.whisperProcess = null;
+    if (!proc || proc.exitCode !== null || proc.killed) return;
+
+    const pid = proc.pid;
+    if (process.platform === 'win32' && pid) {
+      // SIGTERM is emulated on Windows and often leaves the HTTP listener alive,
+      // keeping port 8765 held after a restart. taskkill /T kills the whole tree,
+      // /F forces it.
+      await new Promise<void>((resolve) => {
+        try {
+          const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+            stdio: 'ignore',
+          });
+          killer.on('exit', () => resolve());
+          killer.on('error', () => {
+            try {
+              proc.kill();
+            } catch {
+              /* already gone */
+            }
+            resolve();
+          });
+        } catch {
+          resolve();
+        }
+      });
+    } else {
+      try {
+        proc.kill('SIGTERM');
+        setTimeout(() => {
+          if (proc.exitCode === null && !proc.killed) {
+            try {
+              proc.kill('SIGKILL');
+            } catch {
+              /* already gone */
+            }
+          }
+        }, 2000).unref();
+      } catch {
+        /* already gone */
+      }
+    }
+    this.logger.log('[whisper] Local Whisper service stopped');
+  }
+
+  /**
+   * NestJS lifecycle hooks only fire when shutdown hooks are enabled and the app
+   * closes gracefully. `nest start --watch` restarts and a bare Ctrl+C can bypass
+   * that — which is precisely how a stale whisper_service.py ends up holding
+   * port 8765. These process-level guards are the last line of defence.
+   */
+  private registerShutdownGuards(): void {
+    if (this.shutdownGuardsRegistered) return;
+    this.shutdownGuardsRegistered = true;
+
+    // Synchronous best-effort kill on hard exit.
+    process.once('exit', () => {
+      const proc = this.whisperProcess;
+      if (proc && proc.exitCode === null && !proc.killed) {
+        try {
+          if (process.platform === 'win32' && proc.pid) {
+            spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
+          } else {
+            proc.kill('SIGKILL');
+          }
+        } catch {
+          /* nothing else we can do at this point */
+        }
+      }
+    });
+
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+      process.once(signal, () => {
+        void this.stopWhisperService().finally(() => {
+          // Listener was `once` → re-raising now runs the default behaviour so
+          // Nest and any other handlers still get to shut down.
+          process.kill(process.pid, signal);
+        });
+      });
+    }
   }
 
   private callWhisperService(audioBase64: string, mime: string): Promise<string> {

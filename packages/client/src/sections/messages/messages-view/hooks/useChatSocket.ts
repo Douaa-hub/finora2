@@ -170,15 +170,7 @@ export function useChatSocket(options: UseChatSocketOptions = {}) {
   }, []);
 
   const emitTyping = useCallback((roomId: number, typing: boolean) => {
-    const socket = getSocket();
-    // TEMPORARY DEBUG LOG — remove once the typing-indicator regression is confirmed fixed.
-    console.log("[typing emit]", {
-      event: typing ? "typing:start" : "typing:stop",
-      roomId,
-      socketConnected: socket.connected,
-      socketId: socket.id,
-    });
-    socket.emit(typing ? "typing:start" : "typing:stop", { roomId });
+    getSocket().emit(typing ? "typing:start" : "typing:stop", { roomId });
   }, []);
 
   return { joinRoom, leaveRoom, emitTyping };

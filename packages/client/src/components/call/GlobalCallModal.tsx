@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import {
   Box,
   Avatar,
@@ -42,6 +42,7 @@ export default function GlobalCallModal() {
     isVideoEnabled,
     mediaError,
     connectionErrors,
+    connectedPeers,
     callDuration,
     acceptCall,
     rejectCall,
@@ -57,6 +58,17 @@ export default function GlobalCallModal() {
   const remoteAudioRefs = useRef<Map<number, HTMLAudioElement>>(new Map());
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const isRingingRef = useRef(false);
+
+  const setLocalVideoPipRef = useCallback(
+    (el: HTMLVideoElement | null) => {
+      localVideoPipRef.current = el;
+
+      if (el && localStream && el.srcObject !== localStream) {
+        el.srcObject = localStream;
+      }
+    },
+    [localStream],
+  );
 
   // Format call duration
   const formatDuration = (seconds: number) => {
@@ -634,9 +646,10 @@ export default function GlobalCallModal() {
                               gap: 0.5,
                             }}
                           >
-                            {!rs.stream?.getAudioTracks()[0]?.enabled && (
-                              <MicOff size={12} color="white" />
-                            )}
+                            {rs.stream?.getAudioTracks()[0] &&
+                              !rs.stream.getAudioTracks()[0].enabled && (
+                                <MicOff size={12} color="white" />
+                              )}
                             {participant?.name || `Utilisateur ${rs.userId}`}
                           </Box>
                         </Box>
@@ -669,9 +682,17 @@ export default function GlobalCallModal() {
                       <Typography variant="h6">
                         {participants[0]?.name || "En attente..."}
                       </Typography>
-                      <Typography variant="body2" color="rgba(255,255,255,0.6)">
-                        Connexion en cours...
-                      </Typography>
+                      {!(
+                        participants[0] &&
+                        connectedPeers.has(participants[0].id)
+                      ) && (
+                        <Typography
+                          variant="body2"
+                          color="rgba(255,255,255,0.6)"
+                        >
+                          Connexion en cours...
+                        </Typography>
+                      )}
                     </Box>
                   )}
 
@@ -797,7 +818,7 @@ export default function GlobalCallModal() {
                       }}
                     >
                       <video
-                        ref={localVideoPipRef}
+                        ref={setLocalVideoPipRef}
                         autoPlay
                         playsInline
                         muted

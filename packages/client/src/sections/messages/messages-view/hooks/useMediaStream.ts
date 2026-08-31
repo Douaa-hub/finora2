@@ -24,6 +24,14 @@ export function useMediaStream(callType: CallType | null) {
       setIsLoading(true);
       setError(null);
 
+      // TEMPORARY DIAGNOSTIC LOGGING — timing-only, no logic change. Remove
+      // once the accept-to-connected delay has been root-caused.
+      const __callTimingStartStreamBeginTs = Date.now();
+      console.log(
+        `[CALL-TIMING] startStream begin t=${__callTimingStartStreamBeginTs} type=${typeToUse}`,
+      );
+      let __callTimingGumBeginTs = __callTimingStartStreamBeginTs;
+
       try {
         const constraints: MediaStreamConstraints = {
           audio: {
@@ -41,8 +49,37 @@ export function useMediaStream(callType: CallType | null) {
               : false,
         };
 
+        // TEMPORARY DEBUG LOGGING — remove once the local-stream regression is confirmed fixed.
+        // eslint-disable-next-line no-console
+        console.log(
+          "[MEDIA] getUserMedia requested video=",
+          typeToUse === "video",
+          "audio=",
+          true,
+        );
+
+        // TEMPORARY DIAGNOSTIC LOGGING — timing-only, no logic change.
+        __callTimingGumBeginTs = Date.now();
+        console.log(
+          `[CALL-TIMING] getUserMedia begin t=${__callTimingGumBeginTs} video=${typeToUse === "video"} audio=true elapsedFromStartStream=${__callTimingGumBeginTs - __callTimingStartStreamBeginTs}ms`,
+        );
+
         const mediaStream =
           await navigator.mediaDevices.getUserMedia(constraints);
+
+        // TEMPORARY DIAGNOSTIC LOGGING — timing-only, no logic change.
+        const __callTimingGumSuccessTs = Date.now();
+        console.log(
+          `[CALL-TIMING] getUserMedia success t=${__callTimingGumSuccessTs} elapsedFromGumBegin=${__callTimingGumSuccessTs - __callTimingGumBeginTs}ms elapsedFromStartStream=${__callTimingGumSuccessTs - __callTimingStartStreamBeginTs}ms audioTracks=${mediaStream.getAudioTracks().length} videoTracks=${mediaStream.getVideoTracks().length}`,
+        );
+
+        // eslint-disable-next-line no-console
+        console.log(
+          "[MEDIA] getUserMedia success audioTracks=",
+          mediaStream.getAudioTracks().length,
+          "videoTracks=",
+          mediaStream.getVideoTracks().length,
+        );
 
         mediaStream.getAudioTracks().forEach((track) => {
           track.enabled = true;
@@ -58,6 +95,62 @@ export function useMediaStream(callType: CallType | null) {
         setAudioEnabled(true);
         setVideoEnabled(typeToUse === "video");
       } catch (err: any) {
+        // eslint-disable-next-line no-console
+        console.log("[MEDIA] getUserMedia FAILED", err?.name, err?.message);
+
+        // TEMPORARY DIAGNOSTIC LOGGING — timing-only, no logic change.
+        const __callTimingGumFailedTs = Date.now();
+        console.log(
+          `[CALL-TIMING] getUserMedia failed t=${__callTimingGumFailedTs} elapsedFromGumBegin=${__callTimingGumFailedTs - __callTimingGumBeginTs}ms elapsedFromStartStream=${__callTimingGumFailedTs - __callTimingStartStreamBeginTs}ms name=${err?.name} message=${err?.message}`,
+        );
+
+        // Video calls request audio+video in a single combined getUserMedia
+        // call, which fails atomically: a camera-only problem (e.g. the
+        // device already in use) rejects the whole promise and the
+        // microphone is never acquired either, even though it may be
+        // perfectly available on its own. Retry with audio-only before
+        // surfacing an error, so the call can proceed with working audio
+        // and no video instead of failing outright.
+        if (typeToUse === "video") {
+          try {
+            console.log(
+              "[MEDIA] video getUserMedia failed — retrying audio-only fallback",
+            );
+            const audioOnlyStream = await navigator.mediaDevices.getUserMedia({
+              audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+              },
+              video: false,
+            });
+
+            console.log(
+              "[MEDIA] audio-only fallback succeeded audioTracks=",
+              audioOnlyStream.getAudioTracks().length,
+            );
+
+            audioOnlyStream.getAudioTracks().forEach((track) => {
+              track.enabled = true;
+            });
+
+            setStream(audioOnlyStream);
+            setAudioEnabled(true);
+            setVideoEnabled(false);
+            setError(null);
+            return;
+          } catch (fallbackErr: any) {
+            console.log(
+              "[MEDIA] audio-only fallback FAILED",
+              fallbackErr?.name,
+              fallbackErr?.message,
+            );
+            // Fall through to the existing error handling below, reporting
+            // the original video-attempt error (unchanged behavior when
+            // there is truly no usable device at all).
+          }
+        }
+
         let errorMessage =
           "Erreur lors de l'accès aux périphériques multimédias.";
 

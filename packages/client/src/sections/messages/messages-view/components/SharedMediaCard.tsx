@@ -111,8 +111,6 @@ export default function SharedMediaCard({
   const [imgFailed, setImgFailed] = useState(false);
   const canDownload = !!file.previewUrl && file.previewUrl !== "#";
 
-  if (imgFailed) return null;
-
   const isXlsx = file.type === "xls" && /\.(xls|xlsx)$/i.test(file.name);
   const isCsv = file.type === "xls" && /\.csv$/i.test(file.name);
   const isDocx = file.type === "doc" && /\.docx$/i.test(file.name);

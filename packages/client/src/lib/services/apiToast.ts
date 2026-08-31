@@ -52,6 +52,15 @@ function extractSuccessMessage(data: unknown): string | null {
   return null;
 }
 
+/** True for RTK Query's own in-flight cancellations (stale room/query switch), not a real failure. */
+function isAbortError(error: FetchBaseQueryError): boolean {
+  return (
+    error.status === "FETCH_ERROR" &&
+    typeof error.error === "string" &&
+    /abort/i.test(error.error)
+  );
+}
+
 function extractErrorMessage(error: FetchBaseQueryError): string {
   const status = error.status;
   if (
@@ -101,6 +110,7 @@ export function applyApiResultToasts(
     if (skipError) return;
     const status = result.error.status;
     if (status === 401) return;
+    if (isAbortError(result.error)) return;
     const msg = extractErrorMessage(result.error);
     emitApiToast(msg, "error" as ApiToastSeverity);
     return;
